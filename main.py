@@ -25,7 +25,7 @@ def load_documents(folder: str) -> list[Document]:
     """Read all supported files from a folder and return Document objects."""
 
     documents: list[Document] = []
-    
+
     for filename in sorted(os.listdir(folder)):
         filepath = os.path.join(folder, filename)
 
@@ -63,15 +63,28 @@ def load_documents(folder: str) -> list[Document]:
 def fixed_size_chunk(
     document: Document,
     chunk_size: int,
+    overlap: int = 0,
 ) -> list[Document]:
-    """Split a document into fixed-size chunks."""
+    """
+    Split a document into fixed-size chunks with optional overlap.
+    """
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than 0")
+
+    if overlap < 0:
+        raise ValueError("overlap cannot be negative")
+
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
 
     chunks: list[Document] = []
 
-    for chunk_id, start in enumerate(
-        range(0, len(document.page_content), chunk_size)
-    ):
+    step = chunk_size - overlap
 
+    for chunk_id, start in enumerate(
+        range(0, len(document.page_content), step)
+    ):
         end = min(start + chunk_size, len(document.page_content))
 
         chunk_text = document.page_content[start:end]
@@ -93,7 +106,9 @@ def fixed_size_chunk(
 
 def main():
     folder = "sample"
+
     chunk_size = 10
+    overlap = 3
 
     documents = load_documents(folder)
 
@@ -108,7 +123,11 @@ def main():
         print(f"Characters : {document.metadata['char_count']}")
         print("-" * 50)
 
-        chunks = fixed_size_chunk(document, chunk_size)
+        chunks = fixed_size_chunk(
+            document=document,
+            chunk_size=chunk_size,
+            overlap=overlap,
+        )
 
         print(f"Created {len(chunks)} chunks\n")
 
