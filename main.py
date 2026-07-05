@@ -14,6 +14,12 @@ EXTENSION_TO_LANGUAGE = {
     ".txt": "text",
 }
 
+SEPARATORS = [
+    "\n\n",   
+    "\n",     
+    " ",        
+]
+
 
 @dataclass
 class Document:
@@ -60,7 +66,7 @@ def load_documents(folder: str) -> list[Document]:
     return documents
 
 
-def fixed_size_chunk(
+def fixed_size_chunker(
     document: Document,
     chunk_size: int,
     overlap: int = 0,
@@ -88,11 +94,14 @@ def fixed_size_chunk(
         end = min(start + chunk_size, len(document.page_content))
 
         chunk_text = document.page_content[start:end]
-
-        metadata = document.metadata.copy()
-        metadata["chunk_id"] = chunk_id
-        metadata["chunk_start"] = start
-        metadata["chunk_end"] = end
+        if not chunk_text :
+            continue 
+        metadata = {
+            **document.metadata,
+            "chunk_id": chunk_id,
+            "chunk_start": start,
+            "chunk_end": end,
+        }
 
         chunks.append(
             Document(
@@ -103,6 +112,65 @@ def fixed_size_chunk(
 
     return chunks
 
+
+def recursive_chunk(
+    document: Document,
+    chunk_size: int,
+    separator_index: int = 0,
+) -> list[Document]:
+
+    if separator_index >= len(SEPARATORS):
+        return fixed_size_chunker(document, chunk_size)
+
+    separator = SEPARATORS[separator_index]
+
+    pieces = document.page_content.split(separator)
+
+    chunks = []
+    chunk_id = 0
+
+    for piece in pieces:
+
+        
+        if not piece.strip():
+            continue
+
+        
+        if len(piece) <= chunk_size:
+
+            metadata = document.metadata.copy()
+            metadata["chunk_id"] = chunk_id
+
+            chunks.append(
+                Document(
+                    page_content=piece,
+                    metadata=metadata,
+                )
+            )
+
+            chunk_id += 1
+
+        
+        else:
+
+            child_document = Document(
+                page_content=piece,
+                metadata=document.metadata.copy(),
+            )
+
+            child_chunks = recursive_chunk(
+                child_document,
+                chunk_size,
+                separator_index + 1,
+            )
+
+            
+            for chunk in child_chunks:
+                chunk.metadata["chunk_id"] = chunk_id
+                chunks.append(chunk)
+                chunk_id += 1
+
+    return chunks
 
 def main():
     folder = "sample"
@@ -123,7 +191,7 @@ def main():
         print(f"Characters : {document.metadata['char_count']}")
         print("-" * 50)
 
-        chunks = fixed_size_chunk(
+        chunks = fixed_size_chunker(
             document=document,
             chunk_size=chunk_size,
             overlap=overlap,
