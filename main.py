@@ -15,9 +15,9 @@ EXTENSION_TO_LANGUAGE = {
 }
 
 SEPARATORS = [
-    "\n\n",   
-    "\n",     
-    " ",        
+    "\n\n",
+    "\n",
+    " ",
 ]
 
 
@@ -71,9 +71,7 @@ def fixed_size_chunker(
     chunk_size: int,
     overlap: int = 0,
 ) -> list[Document]:
-    """
-    Split a document into fixed-size chunks with optional overlap.
-    """
+    """Split a document into fixed-size chunks with optional overlap."""
 
     if chunk_size <= 0:
         raise ValueError("chunk_size must be greater than 0")
@@ -94,8 +92,10 @@ def fixed_size_chunker(
         end = min(start + chunk_size, len(document.page_content))
 
         chunk_text = document.page_content[start:end]
-        if not chunk_text :
-            continue 
+
+        if not chunk_text:
+            continue
+
         metadata = {
             **document.metadata,
             "chunk_id": chunk_id,
@@ -126,32 +126,36 @@ def recursive_chunk(
 
     pieces = document.page_content.split(separator)
 
-    chunks = []
+    chunks: list[Document] = []
+
+    current_chunk = ""
     chunk_id = 0
 
     for piece in pieces:
 
-        
         if not piece.strip():
             continue
 
-        
-        if len(piece) <= chunk_size:
+        # Piece itself is too large -> recurse
+        if len(piece) > chunk_size:
 
-            metadata = document.metadata.copy()
-            metadata["chunk_id"] = chunk_id
+            # Save current merged chunk before recursion
+            if current_chunk:
 
-            chunks.append(
-                Document(
-                    page_content=piece,
-                    metadata=metadata,
+                metadata = {
+                    **document.metadata,
+                    "chunk_id": chunk_id,
+                }
+
+                chunks.append(
+                    Document(
+                        page_content=current_chunk,
+                        metadata=metadata,
+                    )
                 )
-            )
 
-            chunk_id += 1
-
-        
-        else:
+                chunk_id += 1
+                current_chunk = ""
 
             child_document = Document(
                 page_content=piece,
@@ -164,19 +168,62 @@ def recursive_chunk(
                 separator_index + 1,
             )
 
-            
             for chunk in child_chunks:
                 chunk.metadata["chunk_id"] = chunk_id
                 chunks.append(chunk)
                 chunk_id += 1
 
+            continue
+
+        # Try to merge with current chunk
+        if not current_chunk:
+            candidate = piece
+        else:
+            candidate = current_chunk + separator + piece
+
+        if len(candidate) <= chunk_size:
+            current_chunk = candidate
+
+        else:
+
+            metadata = {
+                **document.metadata,
+                "chunk_id": chunk_id,
+            }
+
+            chunks.append(
+                Document(
+                    page_content=current_chunk,
+                    metadata=metadata,
+                )
+            )
+
+            chunk_id += 1
+
+            current_chunk = piece
+
+    # Save remaining chunk
+    if current_chunk:
+
+        metadata = {
+            **document.metadata,
+            "chunk_id": chunk_id,
+        }
+
+        chunks.append(
+            Document(
+                page_content=current_chunk,
+                metadata=metadata,
+            )
+        )
+
     return chunks
+
 
 def main():
     folder = "sample"
 
-    chunk_size = 10
-    overlap = 3
+    chunk_size = 30
 
     documents = load_documents(folder)
 
@@ -191,18 +238,16 @@ def main():
         print(f"Characters : {document.metadata['char_count']}")
         print("-" * 50)
 
-        chunks = fixed_size_chunker(
+        chunks = recursive_chunk(
             document=document,
             chunk_size=chunk_size,
-            overlap=overlap,
         )
 
         print(f"Created {len(chunks)} chunks\n")
 
         for chunk in chunks:
             print(
-                f"Chunk {chunk.metadata['chunk_id']} "
-                f"({chunk.metadata['chunk_start']}:{chunk.metadata['chunk_end']})"
+                f"Chunk {chunk.metadata['chunk_id']}"
             )
             print(repr(chunk.page_content))
             print()
