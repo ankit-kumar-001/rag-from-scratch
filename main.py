@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
+from google import genai
 import os
 
 EXTENSION_TO_LANGUAGE = {
@@ -19,6 +20,19 @@ SEPARATORS = [
     "\n",
     " ",
 ]
+
+
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    raise ValueError(
+        "GEMINI_API_KEY environment variable not found."
+    )
+
+
+client = genai.Client(
+    api_key=api_key
+)
 
 
 @dataclass
@@ -64,6 +78,44 @@ def load_documents(folder: str) -> list[Document]:
         documents.append(doc)
 
     return documents
+
+
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """
+    Generate embeddings for multiple texts in a single API call.
+    """
+
+    response = client.models.embed_content(
+        model="gemini-embedding-001",
+        contents=texts,
+    )
+
+    return [
+        embedding.values
+        for embedding in response.embeddings
+    ]
+
+
+def batched(items: list, batch_size: int):
+    """Yield successive sub-lists of at most batch_size items."""
+    for start in range(0, len(items), batch_size):
+        yield items[start:start + batch_size]
+
+
+def embed_documents(chunks: list[Document], batch_size: int = 50) -> list[list[float]]:
+    """
+    Embed a list of chunk Documents, sending sub-batches of at most
+    batch_size texts per API call to stay under rate/size limits.
+    """
+
+    all_embeddings: list[list[float]] = []
+
+    for sub_batch in batched(chunks, batch_size):
+        texts = [chunk.page_content for chunk in sub_batch]
+        embeddings = embed_batch(texts)
+        all_embeddings.extend(embeddings)
+
+    return all_embeddings
 
 
 def fixed_size_chunker(
@@ -224,6 +276,7 @@ def main():
     folder = "sample"
 
     chunk_size = 30
+    embedding_batch_size = 50  # chunks per API call
 
     documents = load_documents(folder)
 
@@ -245,15 +298,21 @@ def main():
 
         print(f"Created {len(chunks)} chunks\n")
 
-        for chunk in chunks:
-            print(
-                f"Chunk {chunk.metadata['chunk_id']}"
-            )
-            print(repr(chunk.page_content))
+        if not chunks:
+            print("=" * 60)
+            continue
+
+        embeddings = embed_documents(chunks, batch_size=embedding_batch_size)
+
+        for chunk, embedding in zip(chunks, embeddings):
+            print(f"Chunk {chunk.metadata['chunk_id']}")
+            print(f"Embedding Dimension : {len(embedding)}")
+            print(f"First 5 Values      : {embedding[:5]}")
+            print(f"Chunk Text          : {repr(chunk.page_content)}")
             print()
 
         print("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    main()  
