@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from typing import Any
 from google import genai
+from dotenv import load_dotenv
+import chromadb
 import os
 
+load_dotenv()
 EXTENSION_TO_LANGUAGE = {
     ".py": "python",
     ".cpp": "cpp",
@@ -272,11 +275,158 @@ def recursive_chunk(
     return chunks
 
 
+def store_chunks(
+    collection,
+    chunks: list[Document],
+    embeddings: list[list[float]],
+):
+    """
+    Store chunk documents and their embeddings in a ChromaDB collection
+    using a single batched insertion.
+    """
+
+    ids = []
+    documents = []
+    metadatas = []
+    vectors = []
+
+    for chunk, embedding in zip(chunks, embeddings):
+
+        chunk_id = f"{chunk.metadata['file_name']}_{chunk.metadata['chunk_id']}"
+
+        ids.append(chunk_id)
+        documents.append(chunk.page_content)
+        metadatas.append(chunk.metadata)
+        vectors.append(embedding)
+
+    collection.add(
+        ids=ids,
+        embeddings=vectors,
+        documents=documents,
+        metadatas=metadatas,
+    )
+
+
+def embed_query(query: str) -> list[float]:
+    """
+    Embed a single query string using the exact same embedding model
+    used for document chunks. Reuses embed_batch so query and document
+    embeddings are guaranteed to come from the same call path/model.
+    """
+
+    embeddings = embed_batch([query])
+    return embeddings[0]
+
+
+def retrieve(
+    query: str,
+    collection,
+    top_k: int = 3,
+) -> list[Document]:
+    """
+    Embed a query, run a semantic search against the ChromaDB collection,
+    and convert the results back into our own Document objects.
+    """
+
+    query_embedding = embed_query(query)
+
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+    )
+
+    # results is keyed by field name -> list of lists (one inner list per query)
+    documents_texts = results["documents"][0]
+    metadatas = results["metadatas"][0]
+
+    retrieved_documents: list[Document] = []
+
+    for text, metadata in zip(documents_texts, metadatas):
+        retrieved_documents.append(
+            Document(
+                page_content=text,
+                metadata=metadata,
+            )
+        )
+
+    return retrieved_documents
+
+
+def generate_answer(
+    query: str,
+    documents: list[Document],
+) -> str:
+    """
+    Given a user query and the retrieved Document chunks, ask Gemini to
+    answer the query using only that context.
+    """
+
+    if not documents:
+        return "No relevant documents found."
+
+    context = "\n\n-----\n\n".join(
+        document.page_content for document in documents
+    )
+
+    prompt = f"""You are an AI assistant that answers questions about a GitHub repository.
+
+Use ONLY the provided context.
+
+If the answer is not present in the context, say so.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+
+    return response.text
+
+
+def test_retrieval(collection):
+    """Run a handful of sample queries and print what comes back."""
+
+    test_queries = [
+        "Where is JWT verification implemented?",
+        "Show me authentication code",
+        "Which file contains login logic?",
+        "How is the token verified?",
+    ]
+
+    for query in test_queries:
+        print(f"Query: {query}")
+        print("-" * 50)
+
+        results = retrieve(query, collection, top_k=3)
+
+        for doc in results:
+            print(f"File     : {doc.metadata.get('file_name')}")
+            print(f"Chunk id : {doc.metadata.get('chunk_id')}")
+            print(f"Text     : {repr(doc.page_content)}")
+            print()
+
+        print("=" * 60)
+
+
 def main():
     folder = "sample"
 
-    chunk_size = 30
+    chunk_size = 500
     embedding_batch_size = 50  # chunks per API call
+
+    # Set up ChromaDB persistent client and collection
+    chroma_client = chromadb.PersistentClient(path="./chroma_db")
+
+    collection = chroma_client.get_or_create_collection(
+        name="repository",
+    )
 
     documents = load_documents(folder)
 
@@ -304,6 +454,12 @@ def main():
 
         embeddings = embed_documents(chunks, batch_size=embedding_batch_size)
 
+        store_chunks(
+            collection,
+            chunks,
+            embeddings,
+        )
+
         for chunk, embedding in zip(chunks, embeddings):
             print(f"Chunk {chunk.metadata['chunk_id']}")
             print(f"Embedding Dimension : {len(embedding)}")
@@ -313,6 +469,23 @@ def main():
 
         print("=" * 60)
 
+    print(f"\nStored {collection.count()} total chunk embeddings in ChromaDB\n")
+
+    # Test retrieval now that ingestion is done
+    print("\nTesting retrieval...\n")
+    test_retrieval(collection)
+
+    # Test the full RAG flow: retrieve() -> generate_answer()
+    print("\nTesting full RAG flow...\n")
+
+    query = "Where is JWT verification implemented?"
+
+    retrieved_documents = retrieve(query, collection, top_k=3)
+    answer = generate_answer(query, retrieved_documents)
+
+    print(f"Query  : {query}")
+    print(f"Answer : {answer}")
+
 
 if __name__ == "__main__":
-    main()  
+    main()
